@@ -8,7 +8,7 @@ keys.**
 
 | | Upstream | This fork |
 |---|---|---|
-| Trigger | Floating bubble (overlay + foreground service) | **Double-press either volume key** while a text field is focused / the keyboard is up → dictation starts immediately. A **single press ends the take**; so does the VAD auto-stop or the sheet's own button. |
+| Trigger | Floating bubble (overlay + foreground service) | **Volume-up and volume-down pressed together** → dictation starts immediately, anywhere. **A single press while it is listening ends the take**; so does the VAD auto-stop or the sheet's own button. |
 | Secondary trigger | — | **Quick Settings tile** ("OpenWispr") — one tap, take ends on the stop button or the VAD auto-stop. |
 | Idle UI | Always-on bubble (field-gated) | Nothing. The sheet only exists while a take is running, then inserts and closes itself. |
 | Bubble | On after onboarding | Off. Still available from **Settings → floating bubble** if you want it back. |
@@ -25,24 +25,28 @@ Files touched:
 
 ## Behaviour notes
 
-- **Single taps and held keys are untouched.** The first press of a pair is passed straight to the
-  system, so a tap changes the volume and holding ramps it exactly as before — the trigger never
-  swallows them, it only watches. The second press of a pair is consumed, so a triggered pair costs
-  one volume step instead of two.
-- **The double press has to be quick**: two full press/release cycles with the second press starting
-  within **300 ms** of the first release. Two deliberate volume steps are slower than that, so
-  turning the volume down two notches does not start a dictation. A press held longer than 200 ms
-  was a ramp, not a tap, and never pairs with the press after it.
-- **One press while it is listening ends the take** — double press to start, press to stop, no screen
-  required. The VAD auto-stop ends it when you pause too, and the sheet's own button is there if you
-  would rather tap that.
-- **The trigger only arms where it makes sense**: a focused editable field, a keyboard on screen, or
-  a take already running. Everywhere else the volume keys are not even looked at.
+- **Nothing is inferred from timing.** The grip is a physical pair of keys: both are down at the same
+  moment, or it did not happen. No double-press window, no tap-vs-hold classification.
+- **A lone volume key is never consumed.** Taps change the volume and a held key ramps it exactly as
+  before. All that is consumed is the *second* key of a grip (and the press that stops a take), and
+  each consumed key stays hidden for its whole press so the system never sees half a key pair.
+- **The grip puts its own volume step back.** The first key is passed to the system, so it moves the
+  volume one step; that step is quietly undone when the grip fires (skipped when the volume is
+  already at its limit, where the press did nothing to undo).
+- **Holding one key to ramp and then catching the other is not a trigger** — the held key is marked as
+  a ramp, so the pair is read as a volume correction, as it should be.
+- **One press while it is listening ends the take.** The VAD auto-stop ends it when you pause too, and
+  the sheet's own button is there if you would rather tap that. Holding the grip does not stop it.
+- **No context gate**: the grip works on any screen, whether or not a text field is focused.
 - **No review step.** When transcription + polish finish, the text is inserted at the cursor and the
   sheet closes — no countdown, no edit screen, no "accept" tap. The reasons this is safe: the result
   is still written to Home's history next to the recording (so a bad take is fixable afterwards), and
   the delivery is haptically confirmed when the text lands in the field.
 - If the accessibility service is off, there is no trigger and no insertion — it is required for both.
+- One device-level conflict worth knowing: holding **both** volume keys for ~3 seconds is Android's
+  own accessibility shortcut. Grip-and-hold may therefore pop the system's shortcut dialog on some
+  phones; turn that off in Settings → Accessibility → Accessibility shortcut, where OpenWispr does not
+  need it.
 
 ## Install
 

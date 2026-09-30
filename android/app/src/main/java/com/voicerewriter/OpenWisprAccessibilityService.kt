@@ -4,11 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -83,19 +83,6 @@ class OpenWisprAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * Longest gap between the first press's release and the second press's press for the pair
-         * to count as a double press. Deliberately tight: two taps meant as two volume steps are
-         * slower than this, and a double press meant as a trigger is faster.
-         */
-        private const val DOUBLE_PRESS_MS = 300L
-
-        /**
-         * A press held longer than this was the system ramping the volume (the way most people
-         * turn it down fast), not a tap, so it never pairs with the press that follows it.
-         */
-        private const val TAP_MAX_MS = 200L
-
-        /**
          * The live dictation, so a second double press can end a take without the user having to
          * reach for the sheet. [RewriteActivity] sets this while its recorder is up and clears it
          * as soon as the take is over; it doubles as "a take is running" for the trigger.
@@ -108,20 +95,20 @@ class OpenWisprAccessibilityService : AccessibilityService() {
     @Volatile private var pendingText: String? = null
     private val retryDelays = longArrayOf(250, 500, 900, 1400, 2000)
 
-    // ---- volume-key double-press trigger state (see onKeyEvent) ----
+    // ---- volume-key grip trigger state (see onKeyEvent) ----
 
-    /** Volume key of the last completed press, or 0 when there is no press to pair with. */
-    private var tapKeyCode = 0
-    /** When that press went down, to tell a tap from a hold. */
-    private var tapDownAt = 0L
-    /** When that press came up, to measure the gap to the next press. */
-    private var tapUpAt = 0L
-    /** Second press of a pair already fired, so its release is swallowed with the press. */
-    private var swallowKeyCode = 0
-    /** A host app has a focused editable field. */
-    @Volatile private var hostFieldFocused = false
-    /** A keyboard window is on screen (the "keyboard is up" half of the arm condition). */
-    @Volatile private var imeVisible = false
+    /** Which volume keys are down right now, so a press can see whether its partner is held. */
+    private var volumeUpHeld = false
+    private var volumeDownHeld = false
+    /** Key whose repeats the system is turning into a volume ramp; it never pairs with anything. */
+    private var rampingKey = 0
+    /**
+     * Key whose press we consumed. It stays invisible to the system for the whole press — down,
+     * repeats and up — so the framework's volume state never sees half of a key event pair.
+     */
+    private var hiddenKeyCode = 0
+    /** The grip fired and is still being held: swallow the rest of it so nothing else reacts. */
+    private var comboLatched = false
     /** Our own recording/transform sheet is on screen, so a second take must not fire. */
     @Volatile private var ourModal = false
 
@@ -154,17 +141,13 @@ class OpenWisprAccessibilityService : AccessibilityService() {
             val editable = f != null && f.isEditable
             @Suppress("DEPRECATION") f?.recycle()
             Log.d(TAG, "fieldFocus(fallback) editable=$editable")
-            hostFieldFocused = editable
-            imeVisible = false
             ourModal = false
             BubbleService.instance?.setFieldFocused(editable)
             return
         }
         var editable = false
         var ourModalActive = false
-        var ime = false
         for (w in wins) {
-            if (w.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD) ime = true
             val root = w.root ?: continue
             if (root.packageName == packageName) {
                 // Our recording/transform sheet (an activity) — don't flap the bubble.
@@ -179,10 +162,6 @@ class OpenWisprAccessibilityService : AccessibilityService() {
             }
             if (editable) break
         }
-        // Drives the volume-key trigger: a focused host field, or a keyboard on screen. Same
-        // "contextual, like a keyboard key" gate the bubble used for its own visibility.
-        hostFieldFocused = editable
-        imeVisible = ime
         ourModal = ourModalActive
         if (ourModalActive) return // leave the bubble as-is while our sheet is up
         Log.d(TAG, "fieldFocus editable=$editable host=$lastHostPackage")
@@ -222,98 +201,123 @@ class OpenWisprAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    // ---------------- volume-key dictation trigger ----------------
+    // ---------------- volume-key grip trigger ----------------
 
     /**
-     * A quick double press of either volume key — with a text field focused or the keyboard up —
-     * starts a dictation. A single press while it is listening ends the take, and the text is
-     * inserted the moment the pipeline finishes.
+     * Volume-up and volume-down pressed together starts a dictation; one press while one is running
+     * ends it.
      *
-     * Nothing is swallowed on the way in. A single tap and a held key (how people actually turn
-     * the volume down fast) reach the system exactly as they always did, because the first press
-     * of the pair is passed straight through; only the second press of a pair, and the press that
-     * stops a take, are consumed. The gap that counts as a double press is [DOUBLE_PRESS_MS], tight
-     * enough that two deliberate volume steps do not qualify.
+     * Nothing has to be inferred from timing, which is what made the earlier gestures flaky: the
+     * first key of the grip is passed straight to the system — so a tap and, above all, a held key
+     * ramping the volume behave exactly as they always did — and only the second key is consumed,
+     * which also puts back the single volume step the first key already caused. A lone press is
+     * never consumed, so the volume keys stay the volume keys.
      *
      * Needs `canRequestFilterKeyEvents` + `flagRequestFilterKeyEvents` in
      * `res/xml/accessibility_service_config.xml`; without them the framework never calls this.
      */
     override fun onKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
-        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
-            return false
-        }
-        if (!triggerArmed()) {
-            forgetTap()
-            return false
-        }
+        if (!isVolumeKey(keyCode)) return false
 
-        val now = SystemClock.uptimeMillis()
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                // Key repeat means the key is being held: the system is ramping the volume, so
-                // this press is a hold and can never pair with the next one.
+                if (comboLatched) return true
+                setHeld(keyCode, true)
+
+                // Repeat means the key is being held, so the system is ramping the volume. That key
+                // is never the first half of a grip: holding one key to turn the volume down fast
+                // and then catching the other is a volume correction, not a dictation.
                 if (event.repeatCount > 0) {
-                    forgetTap()
+                    rampingKey = keyCode
                     return false
                 }
-                // A take is already running: one press ends it. Double press to start, single press
-                // to stop — the whole dictation then needs no screen at all.
-                dictationStopper?.let { stop ->
-                    forgetTap()
-                    swallowKeyCode = keyCode
+
+                // Strictly "is the other key down right now". No timing window on purpose: the
+                // physical pair is either there or it is not, and a window would let two ordinary
+                // volume taps in quick succession count as a gesture.
+                val other = otherVolumeKey(keyCode)
+                val paired = isHeld(other) && rampingKey != other
+
+                if (dictationStopper != null) {
+                    // Listening: a press ends the take. Holding the grip that started it does not.
+                    if (isHeld(other)) {
+                        comboLatched = true
+                        hiddenKeyCode = keyCode
+                        return true
+                    }
+                    hiddenKeyCode = keyCode
                     vibrateTick()
-                    main.post(stop)
+                    dictationStopper?.let { main.post(it) }
                     return true
                 }
-                if (tapKeyCode == keyCode && now - tapUpAt <= DOUBLE_PRESS_MS) {
-                    return fireTrigger(keyCode)
+
+                if (paired && !ourModal) {
+                    comboLatched = true
+                    hiddenKeyCode = keyCode
+                    vibrateTick() // lands before the sheet can, so the gesture feels immediate
+                    // Only if that key's press was actually visible to the system: a key we hid
+                    // never moved the volume, and "undoing" it would move it the wrong way.
+                    if (hiddenKeyCode != other) undoStep(other)
+                    startActivity(RewriteActivity.dictateIntent(this, pushToTalk = false))
+                    return true
                 }
-                tapKeyCode = keyCode
-                tapDownAt = now
-                return false
+                return false // an ordinary volume press, untouched
             }
+
             KeyEvent.ACTION_UP -> {
-                if (swallowKeyCode == keyCode) {
-                    swallowKeyCode = 0
-                    return true
-                }
-                if (tapKeyCode == keyCode) {
-                    tapUpAt = now
-                    // A hold was a ramp, not a tap: it must not pair with whatever comes next.
-                    if (now - tapDownAt > TAP_MAX_MS) tapKeyCode = 0
-                }
-                return false
+                setHeld(keyCode, false)
+                if (rampingKey == keyCode) rampingKey = 0
+                val wasHidden = hiddenKeyCode == keyCode
+                if (wasHidden) hiddenKeyCode = 0
+                if (comboLatched && !volumeUpHeld && !volumeDownHeld) comboLatched = false
+                // The key that fired (or stopped) the take stays hidden for its whole press; the
+                // key that merely opened the grip is passed through as usual, so the system's own
+                // down/up pairing is never left half-finished.
+                return wasHidden
             }
         }
         return false
     }
 
     /**
-     * Watched only where the gesture means something: a host app's text field is focused, a
-     * keyboard is up, or a take is already running (so a second double press can end it).
-     * Everywhere else the volume keys are not even looked at.
+     * Puts back the one volume step the other half of the grip already caused. The keys are never
+     * consumed on the way in — that is what used to break held-key ramping — so the step is undone
+     * here instead, silently, and only when it actually landed: at the top or bottom of the range
+     * the system ignores the press, and undoing it then would move the volume the wrong way.
      */
-    private fun triggerArmed(): Boolean = hostFieldFocused || imeVisible || dictationStopper != null
-
-    /**
-     * The second press of a pair: starts a dictation, unless our own sheet is on screen for reasons
-     * of its own (a result on its way out), where a volume key means nothing. Returns whether the
-     * press was consumed.
-     */
-    private fun fireTrigger(keyCode: Int): Boolean {
-        forgetTap()
-        if (ourModal) return false
-        swallowKeyCode = keyCode
-        vibrateTick() // confirmation lands before the sheet can, so the gesture feels immediate
-        startActivity(RewriteActivity.dictateIntent(this, pushToTalk = false))
-        return true
+    private fun undoStep(keyCode: Int) {
+        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        val wasUp = keyCode == KeyEvent.KEYCODE_VOLUME_UP
+        val stream = AudioManager.STREAM_MUSIC
+        val atLimit = try {
+            if (wasUp) am.getStreamVolume(stream) >= am.getStreamMaxVolume(stream)
+            else am.getStreamVolume(stream) <= 0
+        } catch (_: Exception) {
+            false
+        }
+        if (atLimit) return
+        try {
+            am.adjustStreamVolume(
+                stream,
+                if (wasUp) AudioManager.ADJUST_LOWER else AudioManager.ADJUST_RAISE,
+                0,
+            )
+        } catch (_: Exception) {}
     }
 
-    /** Drops any half-finished press pair (disarmed keys, a hold, a key that already fired). */
-    private fun forgetTap() {
-        tapKeyCode = 0
-        swallowKeyCode = 0
+    private fun isVolumeKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+
+    private fun otherVolumeKey(keyCode: Int): Int =
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) KeyEvent.KEYCODE_VOLUME_DOWN
+        else KeyEvent.KEYCODE_VOLUME_UP
+
+    private fun isHeld(keyCode: Int): Boolean =
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeUpHeld else volumeDownHeld
+
+    private fun setHeld(keyCode: Int, held: Boolean) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) volumeUpHeld = held else volumeDownHeld = held
     }
 
     override fun onDestroy() {
