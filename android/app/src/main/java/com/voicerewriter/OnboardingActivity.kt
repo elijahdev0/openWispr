@@ -302,7 +302,8 @@ private fun OnboardingScreen(onLaunchDictation: () -> Unit, onGoHome: () -> Unit
     fun finishOnboarding() {
         scope.launch {
             withContext(Dispatchers.IO) { SettingsRepository(ctx).setOnboardingComplete(true) }
-            if (overlayGranted) runCatching { SetupUtils.startBubble(ctx) }
+            // The floating bubble is deliberately not started: dictation is triggered by holding a
+            // volume key (or the Quick Settings tile). Settings can still turn the bubble on.
             onGoHome()
         }
     }

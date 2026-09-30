@@ -109,7 +109,7 @@ class RewriteActivity : ComponentActivity() {
         private const val MODEL_WAIT_TIMEOUT_MS = 25_000L
 
         const val EXTRA_AUTO_RECORD = "com.voicerewriter.AUTO_RECORD"
-        /** Hold-to-talk: the bubble is holding the gesture and its release ends the take. */
+        /** Hold-to-talk: the trigger (bubble hold, or a held volume key) ends the take on release. */
         const val EXTRA_PUSH_TO_TALK = "com.voicerewriter.PUSH_TO_TALK"
 
         /** Re-transcribe a saved recording instead of opening the mic (see [PendingAudio]). */
@@ -119,6 +119,17 @@ class RewriteActivity : ComponentActivity() {
         fun retryIntent(context: Context, id: String): Intent =
             Intent(context, RewriteActivity::class.java)
                 .putExtra(EXTRA_RETRY_ID, id)
+
+        /**
+         * Starts a dictation from a trigger — a held volume key, or the Quick Settings tile. With
+         * [pushToTalk] the trigger's release ends the take; without it the take ends on the sheet's
+         * own stop button or the VAD auto-stop.
+         */
+        fun dictateIntent(context: Context, pushToTalk: Boolean): Intent =
+            Intent(context, RewriteActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra(EXTRA_AUTO_RECORD, true)
+                .putExtra(EXTRA_PUSH_TO_TALK, pushToTalk)
 
         /**
          * How long the corrected text is shown before it auto-inserts — scaled to the
@@ -569,8 +580,22 @@ class RewriteActivity : ComponentActivity() {
 
         fun stopRecording(s: Settings) {
             if (stage != Stage.RECORDING) return
+            // A held key released almost immediately — a tap on the trigger, or a release that
+            // raced the sheet opening — has nothing in it worth transcribing. Dropping it silently
+            // beats sending half a syllable to the model and showing an error for it.
+            if (pushToTalk && System.currentTimeMillis() - recStartMs < 350L) {
+                OpenWisprAccessibilityService.dictationStopper = null
+                BubbleService.recordingStopper = null
+                ampJob?.cancel()
+                BubbleService.instance?.showIdle()
+                audioRecorder.cancel()
+                setResult(Activity.RESULT_CANCELED)
+                finish()
+                return
+            }
             durationSec = ((System.currentTimeMillis() - recStartMs) / 1000L).toInt().coerceAtLeast(1)
             BubbleService.recordingStopper = null
+            OpenWisprAccessibilityService.dictationStopper = null
             ampJob?.cancel()
             BubbleService.instance?.showIdle()
             val samples = audioRecorder.stop()
@@ -623,10 +648,14 @@ class RewriteActivity : ComponentActivity() {
             stage = Stage.RECORDING
             BubbleService.instance?.showRecording()
             BubbleService.recordingStopper = { stopRecording(s) }
-            // The release can beat us here: launching this activity takes long enough that a
-            // quick press-and-let-go finishes before the recorder exists. BubbleService clears
-            // the flag on release, so an already-lifted finger means stop now, not never.
-            if (pushToTalk && !BubbleService.holdingToTalk) { stopRecording(s); return }
+            OpenWisprAccessibilityService.dictationStopper = { stopRecording(s) }
+            // The release can beat us here: launching this activity takes long enough that a quick
+            // press-and-let-go finishes before the recorder exists. The trigger clears its held
+            // flag on release, so an already-lifted finger means stop now, not never.
+            if (pushToTalk && !BubbleService.holdingToTalk && !OpenWisprAccessibilityService.triggerHeld) {
+                stopRecording(s)
+                return
+            }
             ampJob?.cancel()
             ampJob = scope.launch {
                 while (isActive && audioRecorder.isRecording) {
@@ -696,6 +725,7 @@ class RewriteActivity : ComponentActivity() {
         fun cancelAndFinish(discardAudio: Boolean = false) {
             streamJob?.cancel(); ampJob?.cancel()
             BubbleService.recordingStopper = null
+            OpenWisprAccessibilityService.dictationStopper = null
             BubbleService.instance?.showIdle()
             audioRecorder.cancel()
             pendingId?.let { id ->
@@ -752,6 +782,7 @@ class RewriteActivity : ComponentActivity() {
         DisposableEffect(Unit) {
             onDispose {
                 BubbleService.recordingStopper = null
+                OpenWisprAccessibilityService.dictationStopper = null
                 ampJob?.cancel()
                 BubbleService.instance?.showIdle()
             }

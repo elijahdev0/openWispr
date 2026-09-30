@@ -18,7 +18,9 @@ android {
         versionCode = 8
         // Kept in step with the git tag and macOS MARKETING_VERSION from 1.1.0 on; before this
         // release the three drifted apart (Android 1.0.1 / tag v0.2.1 / macOS 0.2.1).
-        versionName = "1.4.0"
+        // Fork: versionCode deliberately stays at upstream's, so switching back to an upstream
+        // APK needs an uninstall but never a "downgrade" refusal.
+        versionName = "1.4.0-volkey"
         ndk {
             // Device is arm64; the whisper/llm/mlc4j native libs and the sherpa-onnx AAR
             // all ship arm64-v8a. Restricting here keeps the APK from bundling unused ABIs
