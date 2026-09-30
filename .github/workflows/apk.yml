@@ -46,8 +46,17 @@ jobs:
           echo "$CLT" > /tmp/clt_path
 
       - name: Install NDK + CMake (whisper.cpp + llama.cpp native modules)
+        # NDK 29 still ships under Google's "Preview" licence, which the runner image has not
+        # pre-accepted, so sdkmanager stops at an unanswerable Accept? (y/N) prompt. Accept
+        # everything first, and fall back to sudo when the image's SDK dir is root-owned.
         run: |
-          "$(cat /tmp/clt_path)/sdkmanager" \
+          SM="$(cat /tmp/clt_path)/sdkmanager"
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SUDO=""
+          if ! touch "$SDK/licenses/.write-test" 2>/dev/null; then SUDO="sudo"; fi
+          rm -f "$SDK/licenses/.write-test" 2>/dev/null || true
+          printf 'y\n%.0s' {1..300} | $SUDO "$SM" --licenses > /dev/null 2>&1 || true
+          printf 'y\n%.0s' {1..300} | $SUDO "$SM" \
             "platforms;android-36" "build-tools;36.0.0" \
             "ndk;25.1.8937393" "ndk;29.0.13113456" "cmake;3.22.1" "cmake;3.31.6"
 
