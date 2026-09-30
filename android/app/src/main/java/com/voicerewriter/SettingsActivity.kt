@@ -126,6 +126,21 @@ private fun SettingsScreen(repo: SettingsRepository, launch: (suspend () -> Unit
     var sttEndpoint by remember { mutableStateOf("") }
     var sttKey by remember { mutableStateOf("") }
     var sttModel by remember { mutableStateOf("") }
+    // Deepgram's own options (see Settings.dg*); only rendered when Deepgram is the engine.
+    var dgEndpoint by remember { mutableStateOf("") }
+    var dgLanguage by remember { mutableStateOf("") }
+    var dgSmartFormat by remember { mutableStateOf(true) }
+    var dgPunctuate by remember { mutableStateOf(false) }
+    var dgNumerals by remember { mutableStateOf(false) }
+    var dgDictation by remember { mutableStateOf(false) }
+    var dgParagraphs by remember { mutableStateOf(false) }
+    var dgMeasurements by remember { mutableStateOf(false) }
+    var dgDiarize by remember { mutableStateOf(false) }
+    var dgFillerWords by remember { mutableStateOf(false) }
+    var dgProfanityFilter by remember { mutableStateOf(false) }
+    var dgRedact by remember { mutableStateOf("") }
+    var dgKeyterms by remember { mutableStateOf(true) }
+    var dgMipOptOut by remember { mutableStateOf(false) }
     var defaultMode by remember { mutableStateOf(Defaults.MODE_DICTATE) }
     var deterministicCleanup by remember { mutableStateOf(true) }
     var polishLevel by remember { mutableStateOf(PolishLevel.OFF) }
@@ -166,6 +181,11 @@ private fun SettingsScreen(repo: SettingsRepository, launch: (suspend () -> Unit
         provider = s.provider; model = s.model; customEndpoint = s.customEndpoint; apiKey = s.apiKey
         voice = s.voice; antiAI = s.antiAI; temperature = s.temperature.toFloat()
         sttProvider = s.sttProvider; sttEndpoint = s.sttEndpoint; sttKey = s.sttKey; sttModel = s.sttModel
+        dgEndpoint = s.dgEndpoint; dgLanguage = s.dgLanguage; dgSmartFormat = s.dgSmartFormat
+        dgPunctuate = s.dgPunctuate; dgNumerals = s.dgNumerals; dgDictation = s.dgDictation
+        dgParagraphs = s.dgParagraphs; dgMeasurements = s.dgMeasurements; dgDiarize = s.dgDiarize
+        dgFillerWords = s.dgFillerWords; dgProfanityFilter = s.dgProfanityFilter; dgRedact = s.dgRedact
+        dgKeyterms = s.dgKeyterms; dgMipOptOut = s.dgMipOptOut
         defaultMode = s.defaultMode
         deterministicCleanup = s.deterministicCleanup; polishLevel = s.polishLevel
         vadAutoStop = s.vadAutoStop; bubbleOnlyOnFields = s.bubbleOnlyOnFields
@@ -217,7 +237,13 @@ private fun SettingsScreen(repo: SettingsRepository, launch: (suspend () -> Unit
         provider = provider, model = model.trim(), customEndpoint = customEndpoint.trim(),
         apiKey = apiKey.trim(), voice = voice, antiAI = antiAI, temperature = temperature.toDouble(),
         sttProvider = sttProvider, sttEndpoint = sttEndpoint.trim(), sttKey = sttKey.trim(),
-        sttModel = sttModel.trim(), defaultMode = defaultMode,
+        sttModel = sttModel.trim(),
+        dgEndpoint = dgEndpoint.trim(), dgLanguage = dgLanguage.trim(),
+        dgSmartFormat = dgSmartFormat, dgPunctuate = dgPunctuate, dgNumerals = dgNumerals,
+        dgDictation = dgDictation, dgParagraphs = dgParagraphs, dgMeasurements = dgMeasurements,
+        dgDiarize = dgDiarize, dgFillerWords = dgFillerWords, dgProfanityFilter = dgProfanityFilter,
+        dgRedact = dgRedact.trim(), dgKeyterms = dgKeyterms, dgMipOptOut = dgMipOptOut,
+        defaultMode = defaultMode,
         deterministicCleanup = deterministicCleanup, polishLevel = polishLevel,
         vadAutoStop = vadAutoStop, bubbleOnlyOnFields = bubbleOnlyOnFields,
         hasCompletedOnboarding = true,
@@ -343,7 +369,11 @@ private fun SettingsScreen(repo: SettingsRepository, launch: (suspend () -> Unit
                         Label("Engine")
                         Spacer(Modifier.height(12.dp))
                         Segment(
-                            options = listOf("local" to "On-device", "groq" to "Groq", "openai" to "OpenAI", "custom" to "Custom"),
+                            options = listOf(
+                                "local" to "On-device", "groq" to "Groq", "openai" to "OpenAI",
+                                "deepgram" to "Deepgram", "custom" to "Custom",
+                            ),
+                            perRow = 3,
                             selected = sttProvider,
                             onSelect = {
                                 sttProvider = it
@@ -396,9 +426,84 @@ private fun SettingsScreen(repo: SettingsRepository, launch: (suspend () -> Unit
                             Spacer(Modifier.height(10.dp))
                             InfoNote(buildString {
                                 append("Audio is sent to ")
-                                append(if (sttProvider == "groq") "Groq" else if (sttProvider == "openai") "OpenAI" else "your provider")
+                                append(
+                                    when (sttProvider) {
+                                        "groq" -> "Groq"
+                                        "openai" -> "OpenAI"
+                                        "deepgram" -> "Deepgram"
+                                        else -> "your provider"
+                                    }
+                                )
                                 append(" for transcription.")
                             }) { sttProvider = "local"; persist() }
+                        }
+                        if (sttProvider == "deepgram") {
+                            Divider()
+                            Padded {
+                                Label("Model")
+                                Spacer(Modifier.height(8.dp))
+                                Segment(
+                                    options = listOf(
+                                        "nova-3" to "Nova 3",
+                                        "nova-3-medical" to "Medical",
+                                        "nova-2" to "Nova 2",
+                                        "whisper-large" to "Whisper",
+                                    ),
+                                    perRow = 2,
+                                    selected = sttModel.ifEmpty { "nova-3" },
+                                    onSelect = { sttModel = it; persist() },
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                KeyField(sttModel, "model id (nova-3-medical, nova-2-phonecall…)") { sttModel = it; persist() }
+                                Spacer(Modifier.height(12.dp))
+                                Label("Language")
+                                Spacer(Modifier.height(8.dp))
+                                KeyField(dgLanguage, "en · multi for multilingual · blank = Deepgram default") { dgLanguage = it; persist() }
+                                Spacer(Modifier.height(12.dp))
+                                Label("Endpoint")
+                                Spacer(Modifier.height(8.dp))
+                                KeyField(dgEndpoint, "blank = US · api.eu.deepgram.com/v1/listen for EU") { dgEndpoint = it; persist() }
+                            }
+                            Divider()
+                            Padded { Label("Formatting") }
+                            Divider()
+                            ToggleRow("Smart format", "Punctuation, numerals, dates, currency, emails and URLs", dgSmartFormat) { dgSmartFormat = it; persist() }
+                            if (!dgSmartFormat) {
+                                Divider()
+                                ToggleRow("Punctuate", "Punctuation and capitalization (smart format is off)", dgPunctuate) { dgPunctuate = it; persist() }
+                                Divider()
+                                ToggleRow("Numerals", "\"twenty one\" → \"21\"", dgNumerals) { dgNumerals = it; persist() }
+                            }
+                            Divider()
+                            ToggleRow("Dictation mode", "Say \"comma\" or \"new line\" and get the punctuation (English; turns punctuation on)", dgDictation) { dgDictation = it; persist() }
+                            Divider()
+                            ToggleRow("Paragraphs", "Break the transcript into readable paragraphs", dgParagraphs) { dgParagraphs = it; persist() }
+                            Divider()
+                            ToggleRow("Measurements", "\"five kilometres\" → \"5 km\"", dgMeasurements) { dgMeasurements = it; persist() }
+                            Divider()
+                            Padded { Label("Recognition") }
+                            Divider()
+                            ToggleRow("Speaker labels", "Diarize: mark who said what", dgDiarize) { dgDiarize = it; persist() }
+                            Divider()
+                            ToggleRow("Keep filler words", "Leave \"uh\" and \"um\" in the transcript", dgFillerWords) { dgFillerWords = it; persist() }
+                            Divider()
+                            ToggleRow("Boost my dictionary", "Send personal-dictionary terms as Deepgram key terms", dgKeyterms) { dgKeyterms = it; persist() }
+                            Divider()
+                            Padded { Label("Privacy") }
+                            Divider()
+                            ToggleRow("Profanity filter", "Replace recognised profanity", dgProfanityFilter) { dgProfanityFilter = it; persist() }
+                            Divider()
+                            Padded {
+                                Label("Redact")
+                                Spacer(Modifier.height(8.dp))
+                                KeyField(dgRedact, "numbers · pci · pii · phi · ssn (comma separated)") { dgRedact = it; persist() }
+                            }
+                            Divider()
+                            ToggleRow(
+                                "Model Improvement Program opt-out",
+                                "Deepgram's mip_opt_out — check their pricing impact before enabling",
+                                dgMipOptOut,
+                            ) { dgMipOptOut = it; persist() }
                         }
                     }
                     Divider()
@@ -670,7 +775,8 @@ private fun sttModelOptions(recommendedId: String): List<SttModelOption> = build
 }
 
 private fun keyPlaceholder(provider: String) = when (provider) {
-    "groq" -> "gsk_..."; "openai" -> "sk-..."; else -> "key or endpoint"
+    "groq" -> "gsk_..."; "openai" -> "sk-..."; "deepgram" -> "Deepgram API key"
+    else -> "key or endpoint"
 }
 
 /* ------------------------ reusable pieces ------------------------ */
@@ -754,25 +860,38 @@ private fun StatusRow(title: String, subtitle: String, on: Boolean, trailing: @C
     }
 }
 
+/**
+ * Segmented control: equal-width options in one row, or [perRow] of them per row when the list is
+ * too long to fit — five engines on one line clip their labels on a narrow phone.
+ */
 @Composable
-private fun Segment(options: List<Pair<String, String>>, selected: String, onSelect: (String) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(3.dp),
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-    ) {
-        options.forEach { (id, label) ->
-            val sel = id == selected
-            Box(
-                Modifier.weight(1f).clip(RoundedCornerShape(9.dp))
-                    .background(if (sel) MaterialTheme.colorScheme.surface else Color.Transparent)
-                    .clickable { onSelect(id) }.padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center,
+private fun Segment(
+    options: List<Pair<String, String>>,
+    selected: String,
+    onSelect: (String) -> Unit,
+    perRow: Int = options.size,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        options.chunked(perRow.coerceAtLeast(1)).forEach { rowOptions ->
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                Text(
-                    label, style = MaterialTheme.typography.titleSmall, maxLines = 1,
-                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
-                    color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                rowOptions.forEach { (id, label) ->
+                    val sel = id == selected
+                    Box(
+                        Modifier.weight(1f).clip(RoundedCornerShape(9.dp))
+                            .background(if (sel) MaterialTheme.colorScheme.surface else Color.Transparent)
+                            .clickable { onSelect(id) }.padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            label, style = MaterialTheme.typography.titleSmall, maxLines = 1,
+                            fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Medium,
+                            color = if (sel) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
         }
     }

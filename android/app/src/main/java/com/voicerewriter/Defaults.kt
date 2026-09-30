@@ -148,6 +148,17 @@ object Defaults {
             keyUrl = "https://platform.openai.com/api-keys",
             modelHint = "OpenAI transcription model, e.g. whisper-1 or gpt-4o-mini-transcribe.",
         ),
+        "deepgram" to SttProvider(
+            id = "deepgram",
+            label = "Deepgram",
+            // Pre-recorded listen endpoint. Unlike the others this one is not OpenAI-shaped:
+            // Token auth, the model in the query string, raw audio bytes; see SttEngine.
+            endpoint = "https://api.deepgram.com/v1/listen",
+            defaultModel = "nova-3",
+            keyHelp = "Use a Deepgram API key (console.deepgram.com → API Keys; new accounts get free credit).",
+            keyUrl = "https://console.deepgram.com/",
+            modelHint = "Any Deepgram model id: nova-3, nova-3-medical, nova-2, nova-2-phonecall, whisper-large.",
+        ),
         "custom" to SttProvider(
             id = "custom",
             label = "Custom (OpenAI-compatible)",

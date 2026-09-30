@@ -562,7 +562,16 @@ class RewriteActivity : ComponentActivity() {
                     val raw = if (s.sttProvider == "local") {
                         OnDeviceStt.transcribe(this@RewriteActivity, s, WavIo.toFloats(samples), bias)
                     } else {
-                        SttEngine.transcribe(s, PendingAudio.wavFile(this@RewriteActivity, recId!!), bias)
+                        // Deepgram ignores the OpenAI `prompt` bias and takes plain key terms
+                        // instead, so the names go over as terms. Snippets are left out for the
+                        // same reason the bias prompt leaves them out: what gets spoken for one
+                        // is a phrase that expands to something else entirely.
+                        SttEngine.transcribe(
+                            s,
+                            PendingAudio.wavFile(this@RewriteActivity, recId!!),
+                            bias,
+                            vocab.filter { !it.isSnippet }.map { it.canonical },
+                        )
                     }
                     val text = if (vocab.isEmpty()) raw else VocabCorrector.correct(raw, vocab)
                     if (text.isBlank()) { error = "Empty transcript. Try again."; stage = Stage.ERROR }

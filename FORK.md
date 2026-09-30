@@ -10,6 +10,7 @@ keys.**
 |---|---|---|
 | Trigger | Floating bubble (overlay + foreground service) | **Volume-up and volume-down pressed together** → dictation starts immediately, anywhere. **A single press while it is listening ends the take**; so does the VAD auto-stop or the sheet's own button. |
 | Secondary trigger | — | **Quick Settings tile** ("OpenWispr") — one tap, take ends on the stop button or the VAD auto-stop. |
+| Cloud STT | Groq / OpenAI / Custom | Same, **plus a first-class Deepgram engine** — `POST /v1/listen`, `Token` auth, raw WAV, and Deepgram's own options in Settings (model, language, region endpoint, smart format, punctuation, numerals, dictation mode, paragraphs, measurements, diarize, filler words, profanity filter, redact, dictionary→key terms, MIP opt-out). |
 | Idle UI | Always-on bubble (field-gated) | Nothing. The sheet only exists while a take is running, then inserts and closes itself. |
 | Bubble | On after onboarding | Off. Still available from **Settings → floating bubble** if you want it back. |
 
@@ -21,6 +22,10 @@ Files touched:
   `insertNow(...)` replacing the review stage so the result inserts as soon as it is ready
 - `DictateTileService.kt` (new) + manifest entry — Quick Settings tile
 - `OnboardingActivity.kt` — no longer starts the bubble at the end of setup
+- `SttEngine.kt` / `Settings.kt` / `Defaults.kt` / `SettingsActivity.kt` — the Deepgram engine: a
+  second request shape (Deepgram is not OpenAI-compatible) and the ~15 options that shape a Deepgram
+  transcript. Personal-dictionary terms are sent as Deepgram key terms (Nova-3) or keywords (older
+  models), and `punctuate=true` is sent with `dictation=true` because Deepgram requires the pair.
 - `app/build.gradle.kts` — `versionName = 1.4.0-volkey` (`versionCode` unchanged on purpose)
 
 ## Behaviour notes

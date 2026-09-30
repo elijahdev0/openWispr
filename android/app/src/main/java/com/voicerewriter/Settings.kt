@@ -49,6 +49,24 @@ data class Settings(
     val sttEndpoint: String = "", // only used when sttProvider == "custom"
     val sttKey: String = "",
     val sttModel: String = "",
+    // --- Deepgram's own shaping options (only read when sttProvider == "deepgram").
+    // Deepgram is not an OpenAI-shaped endpoint, so the handful of knobs that decide what the
+    // transcript looks like are configured here rather than inferred. Everything is opt-in
+    // formatting; the app's deterministic cleanup and polish still run on top. ---
+    val dgEndpoint: String = "",       // blank = the US endpoint; set for EU (api.eu.deepgram.com)
+    val dgLanguage: String = "",       // BCP-47 hint; blank lets Deepgram default to en, "multi" for multilingual
+    val dgSmartFormat: Boolean = true, // punctuation + numerals + dates, currency, emails, URLs
+    val dgPunctuate: Boolean = false,  // only when smart_format is off (smart_format implies it)
+    val dgNumerals: Boolean = false,   // only when smart_format is off
+    val dgDictation: Boolean = false,  // honour spoken formatting/punctuation commands
+    val dgParagraphs: Boolean = false, // break the transcript into paragraphs
+    val dgMeasurements: Boolean = false, // "five kilometres" -> "5 km"
+    val dgDiarize: Boolean = false,    // speaker labels (diarize_model)
+    val dgFillerWords: Boolean = false, // keep "uh"/"um" instead of dropping them
+    val dgProfanityFilter: Boolean = false,
+    val dgRedact: String = "",         // comma-separated: numbers, pci, pii, phi, ssn
+    val dgKeyterms: Boolean = true,    // boost the personal dictionary as Deepgram key terms
+    val dgMipOptOut: Boolean = false,  // Model Improvement Program opt-out (deepgram.com/pricing)
     // --- Dictation / rewrite behavior ---
     val defaultMode: String = Defaults.MODE_DICTATE, // "dictate" | "rewrite"
     val deterministicCleanup: Boolean = true, // fast rule-based cleanup (fillers, spoken forms, numbers, self-corrections)
@@ -85,6 +103,14 @@ data class Settings(
         get() = sttModel.trim().ifEmpty {
             Defaults.STT_PROVIDERS[sttProvider]?.defaultModel.orEmpty()
         }
+
+    /** Deepgram endpoint: the US default unless the user points at another region. */
+    val dgEndpointResolved: String
+        get() = dgEndpoint.trim().ifEmpty { Defaults.STT_PROVIDERS["deepgram"]?.endpoint.orEmpty() }
+
+    /** Deepgram redact values, in the order typed. Empty when nothing is being redacted. */
+    val dgRedactValues: List<String>
+        get() = dgRedact.split(',', ' ').map { it.trim() }.filter { it.isNotEmpty() }
 }
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
@@ -103,6 +129,20 @@ class SettingsRepository(private val context: Context) {
         val STT_ENDPOINT = stringPreferencesKey("sttEndpoint")
         val STT_KEY = stringPreferencesKey("sttKey")
         val STT_MODEL = stringPreferencesKey("sttModel")
+        val DG_ENDPOINT = stringPreferencesKey("dgEndpoint")
+        val DG_LANGUAGE = stringPreferencesKey("dgLanguage")
+        val DG_SMART_FORMAT = booleanPreferencesKey("dgSmartFormat")
+        val DG_PUNCTUATE = booleanPreferencesKey("dgPunctuate")
+        val DG_NUMERALS = booleanPreferencesKey("dgNumerals")
+        val DG_DICTATION = booleanPreferencesKey("dgDictation")
+        val DG_PARAGRAPHS = booleanPreferencesKey("dgParagraphs")
+        val DG_MEASUREMENTS = booleanPreferencesKey("dgMeasurements")
+        val DG_DIARIZE = booleanPreferencesKey("dgDiarize")
+        val DG_FILLER_WORDS = booleanPreferencesKey("dgFillerWords")
+        val DG_PROFANITY_FILTER = booleanPreferencesKey("dgProfanityFilter")
+        val DG_REDACT = stringPreferencesKey("dgRedact")
+        val DG_KEYTERMS = booleanPreferencesKey("dgKeyterms")
+        val DG_MIP_OPT_OUT = booleanPreferencesKey("dgMipOptOut")
         val DEFAULT_MODE = stringPreferencesKey("defaultMode")
         val DETERMINISTIC_CLEANUP = booleanPreferencesKey("deterministicCleanup")
         val POLISH_LEVEL = stringPreferencesKey("polishLevel")
@@ -126,6 +166,20 @@ class SettingsRepository(private val context: Context) {
             sttEndpoint = p[Keys.STT_ENDPOINT] ?: defaults.sttEndpoint,
             sttKey = p[Keys.STT_KEY] ?: defaults.sttKey,
             sttModel = p[Keys.STT_MODEL] ?: defaults.sttModel,
+            dgEndpoint = p[Keys.DG_ENDPOINT] ?: defaults.dgEndpoint,
+            dgLanguage = p[Keys.DG_LANGUAGE] ?: defaults.dgLanguage,
+            dgSmartFormat = p[Keys.DG_SMART_FORMAT] ?: defaults.dgSmartFormat,
+            dgPunctuate = p[Keys.DG_PUNCTUATE] ?: defaults.dgPunctuate,
+            dgNumerals = p[Keys.DG_NUMERALS] ?: defaults.dgNumerals,
+            dgDictation = p[Keys.DG_DICTATION] ?: defaults.dgDictation,
+            dgParagraphs = p[Keys.DG_PARAGRAPHS] ?: defaults.dgParagraphs,
+            dgMeasurements = p[Keys.DG_MEASUREMENTS] ?: defaults.dgMeasurements,
+            dgDiarize = p[Keys.DG_DIARIZE] ?: defaults.dgDiarize,
+            dgFillerWords = p[Keys.DG_FILLER_WORDS] ?: defaults.dgFillerWords,
+            dgProfanityFilter = p[Keys.DG_PROFANITY_FILTER] ?: defaults.dgProfanityFilter,
+            dgRedact = p[Keys.DG_REDACT] ?: defaults.dgRedact,
+            dgKeyterms = p[Keys.DG_KEYTERMS] ?: defaults.dgKeyterms,
+            dgMipOptOut = p[Keys.DG_MIP_OPT_OUT] ?: defaults.dgMipOptOut,
             defaultMode = p[Keys.DEFAULT_MODE] ?: defaults.defaultMode,
             deterministicCleanup = p[Keys.DETERMINISTIC_CLEANUP] ?: defaults.deterministicCleanup,
             polishLevel = PolishLevel.from(p[Keys.POLISH_LEVEL]),
@@ -151,6 +205,20 @@ class SettingsRepository(private val context: Context) {
             p[Keys.STT_ENDPOINT] = s.sttEndpoint
             p[Keys.STT_KEY] = s.sttKey
             p[Keys.STT_MODEL] = s.sttModel
+            p[Keys.DG_ENDPOINT] = s.dgEndpoint
+            p[Keys.DG_LANGUAGE] = s.dgLanguage
+            p[Keys.DG_SMART_FORMAT] = s.dgSmartFormat
+            p[Keys.DG_PUNCTUATE] = s.dgPunctuate
+            p[Keys.DG_NUMERALS] = s.dgNumerals
+            p[Keys.DG_DICTATION] = s.dgDictation
+            p[Keys.DG_PARAGRAPHS] = s.dgParagraphs
+            p[Keys.DG_MEASUREMENTS] = s.dgMeasurements
+            p[Keys.DG_DIARIZE] = s.dgDiarize
+            p[Keys.DG_FILLER_WORDS] = s.dgFillerWords
+            p[Keys.DG_PROFANITY_FILTER] = s.dgProfanityFilter
+            p[Keys.DG_REDACT] = s.dgRedact
+            p[Keys.DG_KEYTERMS] = s.dgKeyterms
+            p[Keys.DG_MIP_OPT_OUT] = s.dgMipOptOut
             p[Keys.DEFAULT_MODE] = s.defaultMode
             p[Keys.DETERMINISTIC_CLEANUP] = s.deterministicCleanup
             p[Keys.POLISH_LEVEL] = s.polishLevel.key
