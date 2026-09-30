@@ -462,10 +462,20 @@ class RewriteActivity : ComponentActivity() {
             else { error = "Microphone permission denied."; stage = Stage.ERROR }
         }
 
-        fun toReview(text: String) {
-            // A blank result (e.g. cleanup or polish ate everything) should not leave an empty sheet.
+        /**
+         * The pipeline is finished: insert and close. There is deliberately no review screen and no
+         * edit window — the text lands at the cursor the moment it is ready, which is the point of
+         * dictating this way. Anything worth correcting afterwards is in Home's history, next to the
+         * recording, so nothing is lost by not stopping to ask.
+         */
+        fun insertNow(text: String) {
+            // A blank result (e.g. cleanup or polish ate everything) still has to say so.
             if (text.isBlank()) { error = "Nothing to insert. Try again."; stage = Stage.ERROR; return }
-            finalText = text; editText = text; countdown = 1f; editing = false; stage = Stage.REVIEW
+            finalText = text
+            recordHistory(transcript, text, durationSec, edited = false,
+                onDevice = settings?.sttProvider == "local")
+            recordCorpus(text, text, edited = false)
+            acceptVoice(text)
         }
 
         fun process(s: Settings, spoken: String) {
@@ -491,7 +501,7 @@ class RewriteActivity : ComponentActivity() {
             val deterministicStructure = cleaned.contains('\n')
             if (!s.llmPolishEnabled || wordCount < 4 || (isCode && s.polishLevel != PolishLevel.FULL) ||
                 deterministicStructure) {
-                toReview(cleaned); return
+                insertNow(cleaned); return
             }
             stage = Stage.CORRECTING
             val relaxed = RewriteEngine.hasSelfCorrection(spoken)
@@ -516,7 +526,7 @@ class RewriteActivity : ComponentActivity() {
                     { _ ->
                         // The polish is optional — never throw away a good transcript on its failure.
                         notice = "Couldn't polish. Using the cleaned text."
-                        toReview(cleaned)
+                        insertNow(cleaned)
                     },
                     {
                         // Content-preservation guard: if the model dropped too much or ballooned
@@ -524,9 +534,9 @@ class RewriteActivity : ComponentActivity() {
                         val polished = RewriteEngine.cleanOutput(output)
                         if (polished.isBlank() || !RewriteEngine.preservesContent(cleaned, polished, relaxed)) {
                             notice = "Polish changed too much. Using the cleaned text."
-                            toReview(cleaned)
+                            insertNow(cleaned)
                         } else {
-                            toReview(dropChatTerminalPeriod(polished, category))
+                            insertNow(dropChatTerminalPeriod(polished, category))
                         }
                     },
                 )

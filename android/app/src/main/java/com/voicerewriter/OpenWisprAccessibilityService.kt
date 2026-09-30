@@ -226,13 +226,14 @@ class OpenWisprAccessibilityService : AccessibilityService() {
 
     /**
      * A quick double press of either volume key — with a text field focused or the keyboard up —
-     * starts a dictation, and another double press while it runs ends it.
+     * starts a dictation. A single press while it is listening ends the take, and the text is
+     * inserted the moment the pipeline finishes.
      *
      * Nothing is swallowed on the way in. A single tap and a held key (how people actually turn
      * the volume down fast) reach the system exactly as they always did, because the first press
-     * of the pair is passed straight through; only the second press is consumed, so a triggered
-     * pair costs one volume step instead of two. The gap that counts as a double press is
-     * [DOUBLE_PRESS_MS], tight enough that two deliberate volume steps do not qualify.
+     * of the pair is passed straight through; only the second press of a pair, and the press that
+     * stops a take, are consumed. The gap that counts as a double press is [DOUBLE_PRESS_MS], tight
+     * enough that two deliberate volume steps do not qualify.
      *
      * Needs `canRequestFilterKeyEvents` + `flagRequestFilterKeyEvents` in
      * `res/xml/accessibility_service_config.xml`; without them the framework never calls this.
@@ -255,6 +256,15 @@ class OpenWisprAccessibilityService : AccessibilityService() {
                 if (event.repeatCount > 0) {
                     forgetTap()
                     return false
+                }
+                // A take is already running: one press ends it. Double press to start, single press
+                // to stop — the whole dictation then needs no screen at all.
+                dictationStopper?.let { stop ->
+                    forgetTap()
+                    swallowKeyCode = keyCode
+                    vibrateTick()
+                    main.post(stop)
+                    return true
                 }
                 if (tapKeyCode == keyCode && now - tapUpAt <= DOUBLE_PRESS_MS) {
                     return fireTrigger(keyCode)
@@ -287,18 +297,16 @@ class OpenWisprAccessibilityService : AccessibilityService() {
     private fun triggerArmed(): Boolean = hostFieldFocused || imeVisible || dictationStopper != null
 
     /**
-     * The second press of a pair. Ends the take if one is running; otherwise starts a dictation,
-     * unless our own sheet is on screen for reasons of its own (a result awaiting its edit
-     * window), where a volume key means nothing. Returns whether the press was consumed.
+     * The second press of a pair: starts a dictation, unless our own sheet is on screen for reasons
+     * of its own (a result on its way out), where a volume key means nothing. Returns whether the
+     * press was consumed.
      */
     private fun fireTrigger(keyCode: Int): Boolean {
         forgetTap()
-        val stop = dictationStopper
-        if (stop == null && ourModal) return false
+        if (ourModal) return false
         swallowKeyCode = keyCode
         vibrateTick() // confirmation lands before the sheet can, so the gesture feels immediate
-        if (stop != null) main.post(stop)
-        else startActivity(RewriteActivity.dictateIntent(this, pushToTalk = false))
+        startActivity(RewriteActivity.dictateIntent(this, pushToTalk = false))
         return true
     }
 

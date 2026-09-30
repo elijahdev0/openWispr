@@ -8,7 +8,7 @@ keys.**
 
 | | Upstream | This fork |
 |---|---|---|
-| Trigger | Floating bubble (overlay + foreground service) | **Double-press either volume key** while a text field is focused / the keyboard is up → dictation starts immediately. A second double-press ends the take; so does the VAD auto-stop. |
+| Trigger | Floating bubble (overlay + foreground service) | **Double-press either volume key** while a text field is focused / the keyboard is up → dictation starts immediately. A **single press ends the take**; so does the VAD auto-stop or the sheet's own button. |
 | Secondary trigger | — | **Quick Settings tile** ("OpenWispr") — one tap, take ends on the stop button or the VAD auto-stop. |
 | Idle UI | Always-on bubble (field-gated) | Nothing. The sheet only exists while a take is running, then inserts and closes itself. |
 | Bubble | On after onboarding | Off. Still available from **Settings → floating bubble** if you want it back. |
@@ -17,7 +17,8 @@ Files touched:
 
 - `res/xml/accessibility_service_config.xml` — `canRequestFilterKeyEvents` + `flagRequestFilterKeyEvents`
 - `OpenWisprAccessibilityService.kt` — `onKeyEvent` hold-to-talk trigger, volume-tap replay, arming gate
-- `RewriteActivity.kt` — `dictateIntent(...)`, shared stop hook so a key release ends the take
+- `RewriteActivity.kt` — `dictateIntent(...)`, the stop hook behind the press-to-stop, and
+  `insertNow(...)` replacing the review stage so the result inserts as soon as it is ready
 - `DictateTileService.kt` (new) + manifest entry — Quick Settings tile
 - `OnboardingActivity.kt` — no longer starts the bubble at the end of setup
 - `app/build.gradle.kts` — `versionName = 1.4.0-volkey` (`versionCode` unchanged on purpose)
@@ -32,10 +33,15 @@ Files touched:
   within **300 ms** of the first release. Two deliberate volume steps are slower than that, so
   turning the volume down two notches does not start a dictation. A press held longer than 200 ms
   was a ramp, not a tap, and never pairs with the press after it.
-- **Double-press again while it is listening** to end the take early (otherwise the VAD auto-stop
-  ends it when you pause, or the sheet's own stop button does).
+- **One press while it is listening ends the take** — double press to start, press to stop, no screen
+  required. The VAD auto-stop ends it when you pause too, and the sheet's own button is there if you
+  would rather tap that.
 - **The trigger only arms where it makes sense**: a focused editable field, a keyboard on screen, or
   a take already running. Everywhere else the volume keys are not even looked at.
+- **No review step.** When transcription + polish finish, the text is inserted at the cursor and the
+  sheet closes — no countdown, no edit screen, no "accept" tap. The reasons this is safe: the result
+  is still written to Home's history next to the recording (so a bad take is fixable afterwards), and
+  the delivery is haptically confirmed when the text lands in the field.
 - If the accessibility service is off, there is no trigger and no insertion — it is required for both.
 
 ## Install
