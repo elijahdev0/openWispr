@@ -650,9 +650,9 @@ class RewriteActivity : ComponentActivity() {
             BubbleService.recordingStopper = { stopRecording(s) }
             OpenWisprAccessibilityService.dictationStopper = { stopRecording(s) }
             // The release can beat us here: launching this activity takes long enough that a quick
-            // press-and-let-go finishes before the recorder exists. The trigger clears its held
-            // flag on release, so an already-lifted finger means stop now, not never.
-            if (pushToTalk && !BubbleService.holdingToTalk && !OpenWisprAccessibilityService.triggerHeld) {
+            // press-and-let-go finishes before the recorder exists. BubbleService clears the flag on
+            // release, so an already-lifted finger means stop now, not never.
+            if (pushToTalk && !BubbleService.holdingToTalk) {
                 stopRecording(s)
                 return
             }

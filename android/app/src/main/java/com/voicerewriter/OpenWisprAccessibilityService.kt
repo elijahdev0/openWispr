@@ -4,11 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -82,35 +82,42 @@ class OpenWisprAccessibilityService : AccessibilityService() {
             svc.main.post { svc.evaluateFieldFocus() }
         }
 
-        /** Hold this long on a volume key, with a text field focused, to start dictating. */
-        private const val TRIGGER_HOLD_MS = 400L
+        /**
+         * Longest gap between the first press's release and the second press's press for the pair
+         * to count as a double press. Deliberately tight: two taps meant as two volume steps are
+         * slower than this, and a double press meant as a trigger is faster.
+         */
+        private const val DOUBLE_PRESS_MS = 300L
 
         /**
-         * Ends a hold-to-talk take when the trigger key is released. [RewriteActivity] sets this
-         * while its recorder is up, and clears it as soon as the take is over.
+         * A press held longer than this was the system ramping the volume (the way most people
+         * turn it down fast), not a tap, so it never pairs with the press that follows it.
+         */
+        private const val TAP_MAX_MS = 200L
+
+        /**
+         * The live dictation, so a second double press can end a take without the user having to
+         * reach for the sheet. [RewriteActivity] sets this while its recorder is up and clears it
+         * as soon as the take is over; it doubles as "a take is running" for the trigger.
          */
         @Volatile
         var dictationStopper: (() -> Unit)? = null
-
-        /**
-         * True while a trigger key is still held after it fired a dictation. [RewriteActivity]
-         * reads this the moment its recorder is up: a release that beat the activity there has to
-         * end the take, not leave it running with nothing left able to stop it.
-         */
-        @Volatile
-        var triggerHeld = false
     }
 
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var pendingText: String? = null
     private val retryDelays = longArrayOf(250, 500, 900, 1400, 2000)
 
-    // ---- volume-key trigger state (see onKeyEvent) ----
+    // ---- volume-key double-press trigger state (see onKeyEvent) ----
 
-    /** Pending hold-to-talk timer for the key currently down; null when no key is down. */
-    private var triggerTimer: Runnable? = null
-    /** Key code that already fired a dictation, so its release knows to end the take. */
-    private var firedKeyCode = 0
+    /** Volume key of the last completed press, or 0 when there is no press to pair with. */
+    private var tapKeyCode = 0
+    /** When that press went down, to tell a tap from a hold. */
+    private var tapDownAt = 0L
+    /** When that press came up, to measure the gap to the next press. */
+    private var tapUpAt = 0L
+    /** Second press of a pair already fired, so its release is swallowed with the press. */
+    private var swallowKeyCode = 0
     /** A host app has a focused editable field. */
     @Volatile private var hostFieldFocused = false
     /** A keyboard window is on screen (the "keyboard is up" half of the arm condition). */
@@ -218,10 +225,14 @@ class OpenWisprAccessibilityService : AccessibilityService() {
     // ---------------- volume-key dictation trigger ----------------
 
     /**
-     * Hold either volume key, with a text field focused or the keyboard up, to dictate. The key is
-     * consumed from the moment it goes down so a hold never ramps the volume; a press that turns
-     * out to be an ordinary tap is handed back to the system in [replayVolume]. Releasing ends a
-     * hold-to-talk take, which is the point of the gesture — no finger pinned to a floating button.
+     * A quick double press of either volume key — with a text field focused or the keyboard up —
+     * starts a dictation, and another double press while it runs ends it.
+     *
+     * Nothing is swallowed on the way in. A single tap and a held key (how people actually turn
+     * the volume down fast) reach the system exactly as they always did, because the first press
+     * of the pair is passed straight through; only the second press is consumed, so a triggered
+     * pair costs one volume step instead of two. The gap that counts as a double press is
+     * [DOUBLE_PRESS_MS], tight enough that two deliberate volume steps do not qualify.
      *
      * Needs `canRequestFilterKeyEvents` + `flagRequestFilterKeyEvents` in
      * `res/xml/accessibility_service_config.xml`; without them the framework never calls this.
@@ -231,85 +242,74 @@ class OpenWisprAccessibilityService : AccessibilityService() {
         if (keyCode != KeyEvent.KEYCODE_VOLUME_UP && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
             return false
         }
-
-        // A release ending a take we already started is handled before the arming check: once our
-        // own sheet is up, the conditions that armed the trigger are no longer true, but this is
-        // the event that stops the recorder.
-        if (event.action == KeyEvent.ACTION_UP && firedKeyCode == keyCode) {
-            cancelTriggerTimer()
-            firedKeyCode = 0
-            triggerHeld = false
-            dictationStopper?.let { main.post(it) }
-            return true
+        if (!triggerArmed()) {
+            forgetTap()
+            return false
         }
 
-        if (!triggerArmed()) return false // not our gesture — leave the volume keys alone
-
+        val now = SystemClock.uptimeMillis()
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                if (event.repeatCount == 0) {
-                    val timer = Runnable { fireTrigger(keyCode) }
-                    cancelTriggerTimer()
-                    triggerTimer = timer
-                    main.postDelayed(timer, TRIGGER_HOLD_MS)
+                // Key repeat means the key is being held: the system is ramping the volume, so
+                // this press is a hold and can never pair with the next one.
+                if (event.repeatCount > 0) {
+                    forgetTap()
+                    return false
                 }
-                return true
+                if (tapKeyCode == keyCode && now - tapUpAt <= DOUBLE_PRESS_MS) {
+                    return fireTrigger(keyCode)
+                }
+                tapKeyCode = keyCode
+                tapDownAt = now
+                return false
             }
             KeyEvent.ACTION_UP -> {
-                cancelTriggerTimer()
-                // Released before the hold threshold, so this was a normal volume tap that the
-                // system never saw.
-                replayVolume(keyCode)
-                return true
+                if (swallowKeyCode == keyCode) {
+                    swallowKeyCode = 0
+                    return true
+                }
+                if (tapKeyCode == keyCode) {
+                    tapUpAt = now
+                    // A hold was a ramp, not a tap: it must not pair with whatever comes next.
+                    if (now - tapDownAt > TAP_MAX_MS) tapKeyCode = 0
+                }
+                return false
             }
         }
         return false
     }
 
     /**
-     * Only armed while a host app has a text field focused (or its keyboard is up) and our own
-     * sheet is not on screen. Everywhere else the volume keys behave exactly as they always did.
+     * Watched only where the gesture means something: a host app's text field is focused, a
+     * keyboard is up, or a take is already running (so a second double press can end it).
+     * Everywhere else the volume keys are not even looked at.
      */
-    private fun triggerArmed(): Boolean =
-        (hostFieldFocused || imeVisible) && !ourModal && dictationStopper == null
-
-    private fun fireTrigger(keyCode: Int) {
-        triggerTimer = null
-        if (!triggerArmed()) return
-        firedKeyCode = keyCode
-        triggerHeld = true
-        vibrateTick() // lands before the sheet can, so the gesture feels immediate
-        startActivity(RewriteActivity.dictateIntent(this, pushToTalk = true))
-    }
+    private fun triggerArmed(): Boolean = hostFieldFocused || imeVisible || dictationStopper != null
 
     /**
-     * Hands an ordinary volume tap back to the system. Consuming the key while deciding whether it
-     * was a hold also suppressed the system's own volume change, so the change has to be re-issued
-     * here. [AudioManager.adjustStreamVolume] on the music stream with the system UI shown is what
-     * the framework picks when media is what the user is hearing; a call or Do Not Disturb would
-     * have chosen something else. That approximation is the price of the trigger owning the volume
-     * keys while a field is focused.
+     * The second press of a pair. Ends the take if one is running; otherwise starts a dictation,
+     * unless our own sheet is on screen for reasons of its own (a result awaiting its edit
+     * window), where a volume key means nothing. Returns whether the press was consumed.
      */
-    private fun replayVolume(keyCode: Int) {
-        val am = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        val direction = if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            AudioManager.ADJUST_RAISE
-        } else {
-            AudioManager.ADJUST_LOWER
-        }
-        try {
-            am.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, AudioManager.FLAG_SHOW_UI)
-        } catch (_: Exception) {}
+    private fun fireTrigger(keyCode: Int): Boolean {
+        forgetTap()
+        val stop = dictationStopper
+        if (stop == null && ourModal) return false
+        swallowKeyCode = keyCode
+        vibrateTick() // confirmation lands before the sheet can, so the gesture feels immediate
+        if (stop != null) main.post(stop)
+        else startActivity(RewriteActivity.dictateIntent(this, pushToTalk = false))
+        return true
     }
 
-    private fun cancelTriggerTimer() {
-        triggerTimer?.let { main.removeCallbacks(it) }
-        triggerTimer = null
+    /** Drops any half-finished press pair (disarmed keys, a hold, a key that already fired). */
+    private fun forgetTap() {
+        tapKeyCode = 0
+        swallowKeyCode = 0
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        cancelTriggerTimer()
         main.removeCallbacks(fieldCheck)
         if (instance === this) instance = null
         // Service gone — focus detection is impossible, so let the bubble show always.

@@ -8,7 +8,7 @@ keys.**
 
 | | Upstream | This fork |
 |---|---|---|
-| Trigger | Floating bubble (overlay + foreground service) | **Hold either volume key** ~0.4 s while a text field is focused / the keyboard is up → dictation starts immediately. Releasing the key ends the take and sends it. |
+| Trigger | Floating bubble (overlay + foreground service) | **Double-press either volume key** while a text field is focused / the keyboard is up → dictation starts immediately. A second double-press ends the take; so does the VAD auto-stop. |
 | Secondary trigger | — | **Quick Settings tile** ("OpenWispr") — one tap, take ends on the stop button or the VAD auto-stop. |
 | Idle UI | Always-on bubble (field-gated) | Nothing. The sheet only exists while a take is running, then inserts and closes itself. |
 | Bubble | On after onboarding | Off. Still available from **Settings → floating bubble** if you want it back. |
@@ -24,13 +24,18 @@ Files touched:
 
 ## Behaviour notes
 
-- **Volume keys keep working normally** for a tap: the press is consumed while deciding whether it
-  is a hold, and a short tap is replayed to the system (`AudioManager.adjustStreamVolume`, music
-  stream, system UI). Holding a volume key no longer ramps the volume while a text field is focused —
-  that is the trade for the trigger.
-- **The trigger only arms where it makes sense**: a focused editable field, or a keyboard on screen.
-  Everywhere else it does not touch the key events.
-- A hold released in under ~350 ms is discarded rather than transcribed (nothing worth sending).
+- **Single taps and held keys are untouched.** The first press of a pair is passed straight to the
+  system, so a tap changes the volume and holding ramps it exactly as before — the trigger never
+  swallows them, it only watches. The second press of a pair is consumed, so a triggered pair costs
+  one volume step instead of two.
+- **The double press has to be quick**: two full press/release cycles with the second press starting
+  within **300 ms** of the first release. Two deliberate volume steps are slower than that, so
+  turning the volume down two notches does not start a dictation. A press held longer than 200 ms
+  was a ramp, not a tap, and never pairs with the press after it.
+- **Double-press again while it is listening** to end the take early (otherwise the VAD auto-stop
+  ends it when you pause, or the sheet's own stop button does).
+- **The trigger only arms where it makes sense**: a focused editable field, a keyboard on screen, or
+  a take already running. Everywhere else the volume keys are not even looked at.
 - If the accessibility service is off, there is no trigger and no insertion — it is required for both.
 
 ## Install
